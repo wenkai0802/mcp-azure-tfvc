@@ -1,0 +1,27 @@
+{
+  "name": "mcp-azure-tfvc",
+  "version": "1.0.0",
+  "description": "MCP server for Azure DevOps TFVC read access",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.8.0",
+    "azure-devops-node-api": "^14.1.0",
+    "dotenv": "^16.4.7"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "bin": {
+    "mcp-azure-tfvc": "./src/index.js"
+  },
+  "files": [
+    "src/",
+    "README.md",
+    "package.json"
+  ]
+}

@@ -23,5 +23,9 @@
     "src/",
     "README.md",
     "package.json"
-  ]
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wenkai0802/mcp-azure-tfvc.git"
+  }
 }

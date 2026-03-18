@@ -14,10 +14,11 @@ import {
   listChangesets,
   getChangeset,
   getItemVersions,
+  getFileChanges,
 } from './tfvc.js';
 
 // ── Server setup ──────────────────────────────────────────────────────────────
-if (!process.env.AZURE_DEVOPS_PAT || !process.env.AZURE_DEVOPS_ORG) {
+if (!process.env.AZURE_DEVOPS_PAT || !process.env.AZURE_DEVOPS_ORG_URL) {
   console.error("Error: AZURE_DEVOPS_PAT and AZURE_DEVOPS_ORG environment variables are required.");
   process.exit(1);
 }
@@ -147,6 +148,27 @@ const TOOLS = [
       },
     },
   },
+  {
+    name: 'tfvc_get_file_changes',
+    description:
+      'Compare a TFVC file at the specified changeset against its immediately preceding version. ' +
+      'Returns a diff in conflict-marker style showing removed lines (<<<<<<<<<) vs added lines (>>>>>>>>>), ' +
+      'with up to 3 lines of unchanged context on each side of every change block.',
+    inputSchema: {
+      type: 'object',
+      required: ['path', 'changesetVersion'],
+      properties: {
+        path: {
+          type: 'string',
+          description: 'Full TFVC path to the file (e.g. "$/ProjectName/filePath").',
+        },
+        changesetVersion: {
+          type: 'string',
+          description: 'Changeset number to inspect (e.g. "12345"). The diff will compare this version against the previous one.',
+        },
+      },
+    },
+  },
 ];
 
 // ── List tools handler ────────────────────────────────────────────────────────
@@ -195,6 +217,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'tfvc_get_item_versions':
         result = await getItemVersions(args.itemPath, args.maxCount ?? 20);
+        break;
+
+      case 'tfvc_get_file_changes':
+        result = await getFileChanges(args.path, args.changesetVersion);
         break;
 
       default:

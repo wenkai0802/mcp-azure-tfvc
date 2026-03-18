@@ -1,0 +1,31 @@
+name: Publish Package to npmjs
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # Crucial: This permission allows OIDC to work
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+      
+      # Use Node 24+ for the best native OIDC support
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Publish to npm
+        # No 'env: NODE_AUTH_TOKEN' needed!
+        # Adding --provenance is recommended for Trusted Publishing
+        run: npm publish --provenance

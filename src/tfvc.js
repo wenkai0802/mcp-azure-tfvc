@@ -206,7 +206,186 @@ export async function getItemVersions(itemPath, maxCount = 20) {
   }));
 }
 
+/**
+ * Compare a file at the requested changeset (N) against version N-1.
+ * Returns a diff in conflict-marker style:
+ *
+ *   <<<<<<<<< changeset 123
+ *   line only in previous version
+ *   =========
+ *   line only in requested version
+ *   >>>>>>>>> changeset 124
+ *
+ * Unchanged hunks are shown with 3 lines of context on each side.
+ * Outputs "No changes" if both versions are identical.
+ *
+ * @param {string} filePath  - Full TFVC path, e.g. "$/ProjectName/src/App.cs"
+ * @param {string|number} changesetVersion - The changeset you want to inspect (N)
+ * @returns {Promise<string>} - Human-readable diff string
+ */
+export async function getFileChanges(filePath, changesetVersion) {
+  const targetVersion = Number(changesetVersion);
+  if (!Number.isInteger(targetVersion) || targetVersion < 1) {
+    throw new Error(`Invalid changeset version: ${changesetVersion}`);
+  }
+  const prevVersion = targetVersion - 1;
+
+  // ── 1. Fetch both versions concurrently (N and N-1) ──────────────────────
+  const [newContent, oldContent] = await Promise.all([
+    getFileContent(filePath, String(targetVersion)),
+    prevVersion > 0
+      ? getFileContent(filePath, String(prevVersion)).catch(() => '')
+      : Promise.resolve(''),  // changeset 1 has no predecessor
+  ]);
+
+  const prevLabel = prevVersion > 0 ? `changeset ${prevVersion}` : '(new file)';
+  const currLabel = `changeset ${targetVersion}`;
+
+  // ── 2. Short-circuit if identical ────────────────────────────────────────
+  if (oldContent === newContent) {
+    return `No changes between ${prevLabel} and ${currLabel} for:\n${filePath}`;
+  }
+
+  // ── 3. Line-by-line diff ──────────────────────────────────────────────────
+  const oldLines = oldContent.split(/\r?\n/);
+  const newLines = newContent.split(/\r?\n/);
+
+  const hunks = computeDiffHunks(oldLines, newLines);
+
+  if (hunks.length === 0) {
+    return `No changes between ${prevLabel} and ${currLabel} for:\n${filePath}`;
+  }
+
+  // ── 4. Format output ──────────────────────────────────────────────────────
+  const output = [`Diff for: ${filePath}`, `${prevLabel}  →  ${currLabel}`, ''];
+
+  // Width for line-number column (based on longer file)
+  const w = String(Math.max(oldLines.length, newLines.length)).length;
+  const pad = (n) => String(n).padStart(w, ' ');
+
+  for (const hunk of hunks) {
+    if (hunk.type === 'equal') {
+      for (const { oldLn, newLn, line } of hunk.lines) {
+        // elision sentinel has no line numbers
+        if (oldLn == null) {
+          output.push(`  ${''.padStart(w * 2 + 1, ' ')}  ${line}`);
+        } else {
+          output.push(`  ${pad(oldLn)},${pad(newLn)}  ${line}`);
+        }
+      }
+    } else {
+      output.push(`<<<<<<<<< ${prevLabel}`);
+      for (const { oldLn, line } of hunk.removed) output.push(`- ${pad(oldLn)}        ${line}`);
+      output.push('=========');
+      for (const { newLn, line } of hunk.added) output.push(`+ ${''.padStart(w, ' ')}${pad(newLn)}  ${line}`);
+      output.push(`>>>>>>>>> ${currLabel}`);
+    }
+    output.push('');
+  }
+
+  return output.join('\n');
+}
+
+
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Very lightweight LCS-based diff that returns an array of hunks.
+ * Each hunk is either:
+ *   { type: 'equal',   lines: [{ oldLn, newLn, line }] }
+ *   { type: 'change',  removed: [{ oldLn, line }], added: [{ newLn, line }] }
+ *
+ * Equal hunks are collapsed to at most contextLines on each side; the elided
+ * middle is represented by a sentinel entry with oldLn/newLn = null.
+ */
+function computeDiffHunks(oldLines, newLines, contextLines = 3) {
+  const m = oldLines.length;
+  const n = newLines.length;
+
+  // dp[i][j] = LCS length of oldLines[0..i-1] and newLines[0..j-1]
+  const dp = Array.from({ length: m + 1 }, () => new Uint32Array(n + 1));
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (oldLines[i - 1] === newLines[j - 1]) {
+        dp[i][j] = dp[i - 1][j - 1] + 1;
+      } else {
+        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+      }
+    }
+  }
+
+  // Back-track to get edit script; record 1-based line numbers
+  const ops = []; // { op, line, oldLn?, newLn? }
+  let i = m, j = n;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
+      ops.push({ op: 'eq', line: oldLines[i - 1], oldLn: i, newLn: j });
+      i--; j--;
+    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+      ops.push({ op: 'ins', line: newLines[j - 1], newLn: j });
+      j--;
+    } else {
+      ops.push({ op: 'del', line: oldLines[i - 1], oldLn: i });
+      i--;
+    }
+  }
+  ops.reverse();
+
+  // Group into raw hunks
+  const rawHunks = [];
+  let cur = null;
+  for (const entry of ops) {
+    const { op } = entry;
+    if (op === 'eq') {
+      if (cur && cur.type !== 'equal') { rawHunks.push(cur); cur = null; }
+      if (!cur) cur = { type: 'equal', lines: [] };
+      cur.lines.push(entry);
+    } else {
+      if (cur && cur.type === 'equal') { rawHunks.push(cur); cur = null; }
+      if (!cur) cur = { type: 'change', removed: [], added: [] };
+      if (op === 'del') cur.removed.push(entry);
+      else cur.added.push(entry);
+    }
+  }
+  if (cur) rawHunks.push(cur);
+
+  // Apply context collapsing to equal hunks
+  const result = [];
+  for (let h = 0; h < rawHunks.length; h++) {
+    const hunk = rawHunks[h];
+    if (hunk.type !== 'equal') {
+      result.push(hunk);
+      continue;
+    }
+    const isFirst = h === 0;
+    const isLast = h === rawHunks.length - 1;
+    const lines = hunk.lines;
+
+    if (isFirst && isLast) continue; // entire file unchanged
+
+    if (isFirst) {
+      const ctx = lines.slice(Math.max(0, lines.length - contextLines));
+      if (ctx.length) result.push({ type: 'equal', lines: ctx });
+    } else if (isLast) {
+      const ctx = lines.slice(0, contextLines);
+      if (ctx.length) result.push({ type: 'equal', lines: ctx });
+    } else {
+      const head = lines.slice(0, contextLines);
+      const tail = lines.slice(Math.max(0, lines.length - contextLines));
+      if (head.length) result.push({ type: 'equal', lines: head });
+      const elided = lines.length - contextLines * 2;
+      if (elided > 0) {
+        // sentinel entry — no line numbers, indicates skipped lines
+        result.push({ type: 'equal', lines: [{ oldLn: null, newLn: null, line: `... (${elided} unchanged lines) ...` }] });
+      }
+      if (tail.length) result.push({ type: 'equal', lines: tail });
+    }
+  }
+
+  return result;
+}
+
+
 
 function streamToString(stream) {
   return new Promise((resolve, reject) => {

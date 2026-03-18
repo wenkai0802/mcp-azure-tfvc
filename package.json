@@ -1,6 +1,6 @@
 {
   "name": "mcp-azure-tfvc",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "MCP server for Azure DevOps TFVC read access",
   "type": "module",
   "main": "src/index.js",
